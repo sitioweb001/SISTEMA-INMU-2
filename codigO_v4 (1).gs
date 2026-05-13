@@ -76,6 +76,31 @@ function invalidarCacheAlumnos() {
   try { CacheService.getScriptCache().remove('alumnos_data'); } catch(e) {}
 }
 
+function asegurarHojaDocentes(ss) {
+  var sheet = ss.getSheetByName("docentes");
+  if (!sheet) {
+    sheet = ss.insertSheet("docentes");
+    sheet.appendRow(["Nombre", "Grado", "Seccion", "Materia", "Escala", "Admin"]);
+    return sheet;
+  }
+
+  var lastCol = Math.max(sheet.getLastColumn(), 6);
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var yaMigrada = normalizarTexto(header[3]) === 'materia' &&
+                  normalizarTexto(header[4]) === 'escala' &&
+                  normalizarTexto(header[5]) === 'admin';
+  if (!yaMigrada) {
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      var oldAdmin = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+      sheet.getRange(2, 6, lastRow - 1, 1).setValues(oldAdmin);
+      sheet.getRange(2, 4, lastRow - 1, 2).clearContent();
+    }
+    sheet.getRange(1, 1, 1, 6).setValues([["Nombre", "Grado", "Seccion", "Materia", "Escala", "Admin"]]);
+  }
+  return sheet;
+}
+
 function obtenerHojaDiRefuerzo(ss) {
   var sheet = ss.getSheetByName("di_refuerzo");
   if (!sheet) {
@@ -158,15 +183,17 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 
   } else if (tipo === "lista_docentes" || tipo === "docentes") {
-    var sheet = ss.getSheetByName("docentes");
-    if (!sheet) return ContentService.createTextOutput("[]").setMimeType(ContentService.MimeType.JSON);
+    var sheet = asegurarHojaDocentes(ss);
     var rows = sheet.getDataRange().getValues();
     var data = [];
     for (var i = 1; i < rows.length; i++) {
       if (rows[i][0]) {
-        var adminValue = rows[i][3];
+        var adminValue = rows[i][5];
         data.push({
           nombre: rows[i][0], grado: rows[i][1] || "", seccion: rows[i][2] || "",
+          materia: rows[i][3] || "",
+          tipo_materia: rows[i][4] || "0-10",
+          escala: rows[i][4] || "0-10",
           admin: adminValue === true || adminValue === 'true'
         });
       }
@@ -316,7 +343,8 @@ function doGet(e) {
 
   } else if (tipo === "notas") {
     var gradoParam = (e && e.parameter && e.parameter.grado) ? e.parameter.grado : '';
-    return ContentService.createTextOutput(JSON.stringify(obtenerNotasPorGrado(gradoParam)))
+    var escalaParam = (e && e.parameter && e.parameter.escala) ? e.parameter.escala : '0-10';
+    return ContentService.createTextOutput(JSON.stringify(obtenerNotasPorGrado(gradoParam, escalaParam)))
       .setMimeType(ContentService.MimeType.JSON);
 
   } else if (tipo === "historial_informes") {
@@ -572,9 +600,15 @@ function doPost(e) {
     return ContentService.createTextOutput(JSON.stringify({ success: eliminado })).setMimeType(ContentService.MimeType.JSON);
 
   } else if (data.tipo_post === "nuevo_docente") {
-    var sheet = ss.getSheetByName("docentes");
-    if (!sheet) { sheet = ss.insertSheet("docentes"); sheet.appendRow(["Nombre", "Grado", "Seccion", "Admin"]); }
-    sheet.appendRow([data.nombre, data.grado, data.seccion, data.admin ? "true" : "false"]);
+    var sheet = asegurarHojaDocentes(ss);
+    sheet.appendRow([
+      data.nombre || '',
+      data.grado || '',
+      data.seccion || '',
+      data.materia || '',
+      data.tipo_materia || data.escala || '0-10',
+      data.admin ? "true" : "false"
+    ]);
     return ContentService.createTextOutput("Exito").setMimeType(ContentService.MimeType.TEXT);
 
   } else if (data.tipo_post === "agregar_observacion") {
@@ -595,6 +629,10 @@ function doPost(e) {
 
   } else if (data.tipo_post === "guardar_notas_alumno") {
     var resultado = guardarNotaAlumno(data);
+    return ContentService.createTextOutput(JSON.stringify(resultado)).setMimeType(ContentService.MimeType.JSON);
+
+  } else if (data.tipo_post === "guardar_notas_grupo") {
+    var resultado = guardarNotasGrupo(data);
     return ContentService.createTextOutput(JSON.stringify(resultado)).setMimeType(ContentService.MimeType.JSON);
 
   } else if (data.tipo_post === "guardar_informe") {
@@ -755,13 +793,18 @@ function eliminarInforme(id) {
 // NOTAS POR PERIODO
 // ══════════════════════════════════════════════════════════════════════════════
 
-function obtenerNotasPorGrado(grado) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var gradoNorm = normalizarTexto(grado);
+function getEscalaNotasGas(escala) {
+  return (escala === '0-5' || escala === 5 || escala === '5') ? 5 : 10;
+}
 
-  var sheet = ss.getSheetByName("notas");
+function getNombreHojaNotas(escala) {
+  return getEscalaNotasGas(escala) === 5 ? 'nota-tecnicos' : 'notas';
+}
+
+function getOrCreateNotasSheet(ss, escala) {
+  var sheet = ss.getSheetByName(getNombreHojaNotas(escala));
   if (!sheet) {
-    sheet = ss.insertSheet("notas");
+    sheet = ss.insertSheet(getNombreHojaNotas(escala));
     sheet.appendRow([
       "Grado", "Seccion", "Nombre", "NIE",
       "P1_Cuaderno", "P1_Integradora", "P1_Examen",
@@ -770,6 +813,15 @@ function obtenerNotasPorGrado(grado) {
       "P4_Cuaderno", "P4_Integradora", "P4_Examen"
     ]);
   }
+  return sheet;
+}
+
+function obtenerNotasPorGrado(grado, escala) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var gradoNorm = normalizarTexto(grado);
+  var escalaMax = getEscalaNotasGas(escala);
+
+  var sheet = getOrCreateNotasSheet(ss, escalaMax);
 
   var rows = sheet.getDataRange().getValues();
   var resultado = [];
@@ -797,11 +849,12 @@ function obtenerNotasPorGrado(grado) {
       p4_integradora: parseNotaSegura(fila[14]),
       p4_examen:      parseNotaSegura(fila[15])
     };
-    est.periodo1  = calcularNotaPeriodoGas(est.p1_cuaderno, est.p1_integradora, est.p1_examen);
-    est.periodo2  = calcularNotaPeriodoGas(est.p2_cuaderno, est.p2_integradora, est.p2_examen);
-    est.periodo3  = calcularNotaPeriodoGas(est.p3_cuaderno, est.p3_integradora, est.p3_examen);
-    est.periodo4  = calcularNotaPeriodoGas(est.p4_cuaderno, est.p4_integradora, est.p4_examen);
-    est.notaFinal = (est.periodo1 + est.periodo2 + est.periodo3 + est.periodo4) / 4;
+    est.periodo1  = calcularNotaPeriodoGas(est.p1_cuaderno, est.p1_integradora, est.p1_examen, escalaMax);
+    est.periodo2  = calcularNotaPeriodoGas(est.p2_cuaderno, est.p2_integradora, est.p2_examen, escalaMax);
+    est.periodo3  = calcularNotaPeriodoGas(est.p3_cuaderno, est.p3_integradora, est.p3_examen, escalaMax);
+    est.periodo4  = calcularNotaPeriodoGas(est.p4_cuaderno, est.p4_integradora, est.p4_examen, escalaMax);
+    est.notaFinal = Math.min(escalaMax, (est.periodo1 + est.periodo2 + est.periodo3 + est.periodo4) / 4);
+    est.escala = escalaMax;
     resultado.push(est);
   }
 
@@ -810,18 +863,8 @@ function obtenerNotasPorGrado(grado) {
 
 function guardarNotaAlumno(data) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName("notas");
-
-  if (!sheet) {
-    sheet = ss.insertSheet("notas");
-    sheet.appendRow([
-      "Grado", "Seccion", "Nombre", "NIE",
-      "P1_Cuaderno", "P1_Integradora", "P1_Examen",
-      "P2_Cuaderno", "P2_Integradora", "P2_Examen",
-      "P3_Cuaderno", "P3_Integradora", "P3_Examen",
-      "P4_Cuaderno", "P4_Integradora", "P4_Examen"
-    ]);
-  }
+  var escalaMax = getEscalaNotasGas(data.escala || data.escala_notas || data.tipo_materia);
+  var sheet = getOrCreateNotasSheet(ss, escalaMax);
 
   var rows = sheet.getDataRange().getValues();
   var gradoNorm  = normalizarTexto(data.grado  || '');
@@ -829,10 +872,10 @@ function guardarNotaAlumno(data) {
   var nieStr     = (data.nie || '').toString().trim();
 
   var notasValores = [
-    toNum(data.p1_cuaderno),    toNum(data.p1_integradora), toNum(data.p1_examen),
-    toNum(data.p2_cuaderno),    toNum(data.p2_integradora), toNum(data.p2_examen),
-    toNum(data.p3_cuaderno),    toNum(data.p3_integradora), toNum(data.p3_examen),
-    toNum(data.p4_cuaderno),    toNum(data.p4_integradora), toNum(data.p4_examen)
+    toNum(data.p1_cuaderno, escalaMax),    toNum(data.p1_integradora, escalaMax), toNum(data.p1_examen, escalaMax),
+    toNum(data.p2_cuaderno, escalaMax),    toNum(data.p2_integradora, escalaMax), toNum(data.p2_examen, escalaMax),
+    toNum(data.p3_cuaderno, escalaMax),    toNum(data.p3_integradora, escalaMax), toNum(data.p3_examen, escalaMax),
+    toNum(data.p4_cuaderno, escalaMax),    toNum(data.p4_integradora, escalaMax), toNum(data.p4_examen, escalaMax)
   ];
 
   var filaEncontrada = -1;
@@ -859,16 +902,41 @@ function guardarNotaAlumno(data) {
   return { exito: true };
 }
 
-function toNum(val) {
-  if (val === null || val === undefined || val === '') return '';
-  var n = parseFloat(val);
-  return isNaN(n) ? '' : n;
+function guardarNotasGrupo(data) {
+  var notas = data.notas || [];
+  if (!Array.isArray(notas)) return { exito: false, error: 'Notas inválidas' };
+
+  var guardadas = 0;
+  for (var i = 0; i < notas.length; i++) {
+    var item = notas[i] || {};
+    item.grado = item.grado || data.grado || '';
+    item.seccion = item.seccion || data.seccion || '';
+    item.escala = item.escala || data.escala || data.escala_notas || data.tipo_materia || '0-10';
+    guardarNotaAlumno(item);
+    guardadas++;
+  }
+
+  return {
+    exito: true,
+    guardadas: guardadas,
+    hoja: getNombreHojaNotas(data.escala || data.escala_notas || data.tipo_materia)
+  };
 }
 
-function calcularNotaPeriodoGas(cuaderno, integradora, examen) {
-  return ((parseFloat(cuaderno)    || 0) * 0.30)
-       + ((parseFloat(integradora) || 0) * 0.30)
-       + ((parseFloat(examen)      || 0) * 0.40);
+function toNum(val, escala) {
+  if (val === null || val === undefined || val === '') return '';
+  var n = parseFloat(val);
+  if (isNaN(n)) return '';
+  var max = getEscalaNotasGas(escala);
+  return Math.min(max, Math.max(0, n));
+}
+
+function calcularNotaPeriodoGas(cuaderno, integradora, examen, escala) {
+  var max = getEscalaNotasGas(escala);
+  var nota = ((parseFloat(cuaderno)    || 0) * 0.35)
+           + ((parseFloat(integradora) || 0) * 0.35)
+           + ((parseFloat(examen)      || 0) * 0.30);
+  return Math.min(max, Math.max(0, nota));
 }
 
 function parseNotaSegura(valor) {
@@ -888,8 +956,11 @@ function exportarExcelNotasInstitucional(params) {
   var asignatura = params.asignatura || '';
   var docente  = params.docente  || '';
   var anio     = params.anio     || new Date().getFullYear();
+  var escalaMax = getEscalaNotasGas(params.escala || params.escala_notas || params.tipo_materia);
+  var notaAprobado = escalaMax === 5 ? 3 : 6;
+  var notaRiesgo = escalaMax === 5 ? 2.5 : 5;
 
-  var notasData = obtenerNotasPorGrado(grado);
+  var notasData = obtenerNotasPorGrado(grado, escalaMax);
   if (seccion) {
     var secNorm = normalizarTexto(seccion);
     notasData = notasData.filter(function(n){ return normalizarTexto(n.seccion) === secNorm; });
@@ -931,7 +1002,8 @@ function exportarExcelNotasInstitucional(params) {
 
     var datosGrupo = 'Sección:  ' + grado + ' ' + seccion + '  ' + anio +
                      '          Asignatura:     ' + asignatura +
-                     '          Profesor:' + docente;
+                     '          Profesor:' + docente +
+                     '          Escala: 0-' + escalaMax;
     tempSheet.getRange(4, 6).setValue(datosGrupo);
     tempSheet.getRange(4, 6, 1, totalCols - 5).setFontSize(9).setFontWeight('bold');
 
@@ -1021,26 +1093,26 @@ function exportarExcelNotasInstitucional(params) {
         var v3 = p[2] !== null && p[2] !== undefined ? p[2] : '';
         tempSheet.getRange(row, colN + 2).setValue(v3);
 
-        var prom = p[3] || 0;
+        var prom = Math.min(escalaMax, p[3] || 0);
         var promCell = tempSheet.getRange(row, colN + 3);
         promCell.setValue(prom > 0 ? Math.round(prom * 100) / 100 : 0);
 
-        var promBg = (prom < 5 && prom >= 0) ? '#e53e3e' : bg;
-        var promFg = (prom < 5 && prom >= 0) ? '#ffffff' : '#1e293b';
+        var promBg = (prom < notaRiesgo && prom >= 0) ? '#e53e3e' : (prom < notaAprobado ? '#fff2cc' : bg);
+        var promFg = (prom < notaRiesgo && prom >= 0) ? '#ffffff' : '#1e293b';
         promCell.setBackground(promBg).setFontColor(promFg).setFontWeight('bold');
 
         colN += 4;
       });
 
-      var notaFinal = est.notaFinal || 0;
+      var notaFinal = Math.min(escalaMax, est.notaFinal || 0);
       notaFinal = Math.round(notaFinal * 100) / 100;
-      var nfBg = notaFinal < 5 ? '#e53e3e' : '#1a3a5c';
+      var nfBg = notaFinal < notaRiesgo ? '#e53e3e' : '#1a3a5c';
       var nfFg = '#ffffff';
       tempSheet.getRange(row, colN)
         .setValue(notaFinal > 0 ? notaFinal : 0)
         .setBackground(nfBg).setFontColor(nfFg).setFontWeight('bold');
 
-      tempSheet.getRange(row, 1, 1, totalCols).setBackground(bg).setFontSize(9);
+      tempSheet.getRange(row, 1, 1, totalCols).setFontSize(9);
       tempSheet.getRange(row, 1).setHorizontalAlignment('center').setFontWeight('bold').setBackground('#f1f5f9');
       tempSheet.getRange(row, 2).setHorizontalAlignment('center').setFontSize(8);
       tempSheet.getRange(row, 3).setHorizontalAlignment('left');
@@ -1069,7 +1141,7 @@ function exportarExcelNotasInstitucional(params) {
 
     SpreadsheetApp.flush();
 
-    var nombreArchivo = 'Cuadro_Notas_' + grado.replace(/\s+/g,'_') + '_' + seccion + '_' + asignatura.replace(/\s+/g,'_') + '_' + anio + '.xlsx';
+    var nombreArchivo = 'Cuadro_Notas_' + grado.replace(/\s+/g,'_') + '_' + seccion + '_' + asignatura.replace(/\s+/g,'_') + '_' + anio + '_0-' + escalaMax + '.xlsx';
 
     var driveFile = DriveApp.getFileById(ss.getId());
     var parents = driveFile.getParents();
@@ -1298,19 +1370,26 @@ function obtenerExpedienteAlumno(nie) {
   }
 
   var notas = null;
-  var notasSheet = ss.getSheetByName("notas");
-  if (notasSheet) {
+  var hojasNotas = [
+    { sheet: ss.getSheetByName("notas"), escala: 10 },
+    { sheet: ss.getSheetByName("nota-tecnicos"), escala: 5 }
+  ];
+  for (var hn = 0; hn < hojasNotas.length && !notas; hn++) {
+    var notasSheet = hojasNotas[hn].sheet;
+    if (!notasSheet) continue;
+    var escalaNotasAlumno = hojasNotas[hn].escala;
     var notasRows = notasSheet.getDataRange().getValues();
     for (var n = 1; n < notasRows.length; n++) {
       if ((notasRows[n][3]||'').toString().trim() === nieStr ||
           normalizarTexto(notasRows[n][2]) === normalizarTexto(alumno.nombre)) {
         notas = {
-          p1: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][4]), parseNotaSegura(notasRows[n][5]), parseNotaSegura(notasRows[n][6])),
-          p2: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][7]), parseNotaSegura(notasRows[n][8]), parseNotaSegura(notasRows[n][9])),
-          p3: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][10]), parseNotaSegura(notasRows[n][11]), parseNotaSegura(notasRows[n][12])),
-          p4: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][13]), parseNotaSegura(notasRows[n][14]), parseNotaSegura(notasRows[n][15]))
+          escala: escalaNotasAlumno,
+          p1: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][4]), parseNotaSegura(notasRows[n][5]), parseNotaSegura(notasRows[n][6]), escalaNotasAlumno),
+          p2: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][7]), parseNotaSegura(notasRows[n][8]), parseNotaSegura(notasRows[n][9]), escalaNotasAlumno),
+          p3: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][10]), parseNotaSegura(notasRows[n][11]), parseNotaSegura(notasRows[n][12]), escalaNotasAlumno),
+          p4: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][13]), parseNotaSegura(notasRows[n][14]), parseNotaSegura(notasRows[n][15]), escalaNotasAlumno)
         };
-        notas.final = (notas.p1 + notas.p2 + notas.p3 + notas.p4) / 4;
+        notas.final = Math.min(escalaNotasAlumno, (notas.p1 + notas.p2 + notas.p3 + notas.p4) / 4);
         break;
       }
     }
