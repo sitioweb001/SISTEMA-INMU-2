@@ -173,6 +173,19 @@ function doGet(e) {
     }
     return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 
+  } else if (tipo === "materias_docente") {
+    var nombreDocente = e.parameter.nombre_docente || '';
+    var matSheet = ss.getSheetByName("materias_docentes");
+    if (!matSheet) return ContentService.createTextOutput("[]").setMimeType(ContentService.MimeType.JSON);
+    var rows = matSheet.getDataRange().getValues();
+    var data = [];
+    for (var i = 1; i < rows.length; i++) {
+      if (rows[i][0] === nombreDocente) {
+        data.push({ materia: rows[i][1], escala: rows[i][2] || "" });
+      }
+    }
+    return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+
   } else if (tipo === "alumnos") {
     var gradoParam = normalizarTexto(e.parameter && e.parameter.grado ? e.parameter.grado : '');
     var seccionParam = normalizarTexto(e.parameter && e.parameter.seccion ? e.parameter.seccion : '');
@@ -575,7 +588,36 @@ function doPost(e) {
     var sheet = ss.getSheetByName("docentes");
     if (!sheet) { sheet = ss.insertSheet("docentes"); sheet.appendRow(["Nombre", "Grado", "Seccion", "Admin"]); }
     sheet.appendRow([data.nombre, data.grado, data.seccion, data.admin ? "true" : "false"]);
+    
+    // Guardar materia inicial si se proporciona
+    if (data.materia && data.escala) {
+      var matSheet = ss.getSheetByName("materias_docentes");
+      if (!matSheet) { matSheet = ss.insertSheet("materias_docentes"); matSheet.appendRow(["Nombre_Docente", "Materia", "Escala"]); }
+      matSheet.appendRow([data.nombre, data.materia, data.escala]);
+    }
+    
     return ContentService.createTextOutput("Exito").setMimeType(ContentService.MimeType.TEXT);
+
+  } else if (data.tipo_post === "agregar_materia_docente") {
+    var matSheet = ss.getSheetByName("materias_docentes");
+    if (!matSheet) { matSheet = ss.insertSheet("materias_docentes"); matSheet.appendRow(["Nombre_Docente", "Materia", "Escala"]); }
+    matSheet.appendRow([data.nombre_docente, data.materia, data.escala]);
+    return ContentService.createTextOutput(JSON.stringify({ success: true })).setMimeType(ContentService.MimeType.JSON);
+
+  } else if (data.tipo_post === "eliminar_materia_docente") {
+    var matSheet = ss.getSheetByName("materias_docentes");
+    if (!matSheet) {
+      return ContentService.createTextOutput(JSON.stringify({ success: false, error: "Hoja no existe" })).setMimeType(ContentService.MimeType.JSON);
+    }
+    var rows = matSheet.getDataRange().getValues();
+    var eliminado = false;
+    for (var i = rows.length - 1; i >= 1; i--) {
+      if (rows[i][0] === data.nombre_docente && rows[i][1] === data.materia) {
+        matSheet.deleteRow(i + 1);
+        eliminado = true;
+      }
+    }
+    return ContentService.createTextOutput(JSON.stringify({ success: eliminado })).setMimeType(ContentService.MimeType.JSON);
 
   } else if (data.tipo_post === "agregar_observacion") {
     var sheet = ss.getSheetByName("observaciones");
