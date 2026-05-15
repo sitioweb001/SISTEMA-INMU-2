@@ -344,7 +344,7 @@ function doGet(e) {
   } else if (tipo === "notas") {
     var gradoParam = (e && e.parameter && e.parameter.grado) ? e.parameter.grado : '';
     var escalaParam = (e && e.parameter && e.parameter.escala) ? e.parameter.escala : '0-10';
-    return ContentService.createTextOutput(JSON.stringify(obtenerNotasPorGrado(gradoParam, escalaParam)))
+    return ContentService.createTextOutput(JSON.stringify(obtenerNotasPorGrado(gradoParam, escalaParam, e.parameter.seccion || '', e.parameter.materia_clave || '')))
       .setMimeType(ContentService.MimeType.JSON);
 
   } else if (tipo === "historial_informes") {
@@ -810,26 +810,41 @@ function getOrCreateNotasSheet(ss, escala) {
       "P1_Cuaderno", "P1_Integradora", "P1_Examen",
       "P2_Cuaderno", "P2_Integradora", "P2_Examen",
       "P3_Cuaderno", "P3_Integradora", "P3_Examen",
-      "P4_Cuaderno", "P4_Integradora", "P4_Examen"
+      "P4_Cuaderno", "P4_Integradora", "P4_Examen",
+      "Materia_Clave", "Asignatura", "Especialidad"
     ]);
   }
   return sheet;
 }
 
-function obtenerNotasPorGrado(grado, escala) {
+
+function asegurarColumnasNotasMetadata(sheet) {
+  var lastCol = Math.max(sheet.getLastColumn(), 1);
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var cambios = false;
+  if (!header[16]) { sheet.getRange(1, 17).setValue("Materia_Clave"); cambios = true; }
+  if (!header[17]) { sheet.getRange(1, 18).setValue("Asignatura"); cambios = true; }
+  if (!header[18]) { sheet.getRange(1, 19).setValue("Especialidad"); cambios = true; }
+  return cambios;
+}
+function obtenerNotasPorGrado(grado, escala, seccion, materiaClave) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var gradoNorm = normalizarTexto(grado);
   var escalaMax = getEscalaNotasGas(escala);
+  var seccionNorm = normalizarTexto(seccion || "");
+  var materiaClaveNorm = normalizarTexto(materiaClave || "");
 
   var sheet = getOrCreateNotasSheet(ss, escalaMax);
+  asegurarColumnasNotasMetadata(sheet);
 
   var rows = sheet.getDataRange().getValues();
-  var resultado = [];
+  var mapa = {};
 
   for (var i = 1; i < rows.length; i++) {
     var fila = rows[i];
     if (!fila[2] && !fila[3]) continue;
     if (gradoNorm && normalizarTexto(fila[0]) !== gradoNorm) continue;
+    if (seccionNorm && normalizarTexto(fila[1]) !== seccionNorm) continue;
 
     var est = {
       grado:          fila[0]  || '',
@@ -847,17 +862,31 @@ function obtenerNotasPorGrado(grado, escala) {
       p3_examen:      parseNotaSegura(fila[12]),
       p4_cuaderno:    parseNotaSegura(fila[13]),
       p4_integradora: parseNotaSegura(fila[14]),
-      p4_examen:      parseNotaSegura(fila[15])
+      p4_examen:      parseNotaSegura(fila[15]),
+      materia_clave:  fila[16] || '',
+      asignatura:     fila[17] || '',
+      especialidad:   fila[18] || ''
     };
+    if (materiaClaveNorm && normalizarTexto(est.materia_clave || '') !== materiaClaveNorm) continue;
     est.periodo1  = calcularNotaPeriodoGas(est.p1_cuaderno, est.p1_integradora, est.p1_examen, escalaMax);
     est.periodo2  = calcularNotaPeriodoGas(est.p2_cuaderno, est.p2_integradora, est.p2_examen, escalaMax);
     est.periodo3  = calcularNotaPeriodoGas(est.p3_cuaderno, est.p3_integradora, est.p3_examen, escalaMax);
     est.periodo4  = calcularNotaPeriodoGas(est.p4_cuaderno, est.p4_integradora, est.p4_examen, escalaMax);
     est.notaFinal = Math.min(escalaMax, (est.periodo1 + est.periodo2 + est.periodo3 + est.periodo4) / 4);
     est.escala = escalaMax;
-    resultado.push(est);
+
+    var idAlumno = (est.nie || '').toString().trim();
+    if (!idAlumno) idAlumno = normalizarTexto(est.nombre || '');
+    var idMateria = normalizarTexto(est.materia_clave || 'sin-clave');
+    var key = normalizarTexto(est.grado || '') + '|' + normalizarTexto(est.seccion || '') + '|' + idAlumno + '|' + idMateria;
+    // Si hay duplicados históricos, conservar el último registro (más reciente en la hoja).
+    mapa[key] = est;
   }
 
+  var resultado = [];
+  for (var k in mapa) {
+    if (mapa.hasOwnProperty(k)) resultado.push(mapa[k]);
+  }
   return resultado;
 }
 
@@ -865,11 +894,14 @@ function guardarNotaAlumno(data) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var escalaMax = getEscalaNotasGas(data.escala || data.escala_notas || data.tipo_materia);
   var sheet = getOrCreateNotasSheet(ss, escalaMax);
+  asegurarColumnasNotasMetadata(sheet);
 
   var rows = sheet.getDataRange().getValues();
   var gradoNorm  = normalizarTexto(data.grado  || '');
   var nombreNorm = normalizarTexto(data.nombre || '');
   var nieStr     = (data.nie || '').toString().trim();
+  var seccionNorm = normalizarTexto(data.seccion || '');
+  var materiaClaveNorm = normalizarTexto(data.materia_clave || '');
 
   var notasValores = [
     toNum(data.p1_cuaderno, escalaMax),    toNum(data.p1_integradora, escalaMax), toNum(data.p1_examen, escalaMax),
@@ -883,20 +915,25 @@ function guardarNotaAlumno(data) {
     var filaGrado  = normalizarTexto(rows[i][0]);
     var filaFila   = normalizarTexto(rows[i][2]);
     var filaNie    = (rows[i][3] || '').toString().trim();
-    var coincide = filaGrado === gradoNorm &&
-      (filaNie !== '' && filaNie === nieStr || filaFila === nombreNorm);
+    var filaSeccion = normalizarTexto(rows[i][1] || "");
+    var filaMateriaClave = normalizarTexto(rows[i][16] || "");
+    var coincideAlumno = ((filaNie !== '' && filaNie === nieStr) || filaFila === nombreNorm);
+    var coincideSeccion = !seccionNorm || filaSeccion === seccionNorm;
+    var coincideMateria = !materiaClaveNorm || filaMateriaClave === materiaClaveNorm;
+    var coincide = filaGrado === gradoNorm && coincideAlumno && coincideSeccion && coincideMateria;
     if (coincide) { filaEncontrada = i + 1; break; }
   }
 
   if (filaEncontrada > 0) {
     sheet.getRange(filaEncontrada, 5, 1, 12).setValues([notasValores]);
+    sheet.getRange(filaEncontrada, 17, 1, 3).setValues([[data.materia_clave || "", data.asignatura || data.materia || "", data.especialidad || ""]]);
   } else {
     sheet.appendRow([
       data.grado   || '',
       data.seccion || '',
       data.nombre  || '',
       data.nie     || ''
-    ].concat(notasValores));
+    ].concat(notasValores).concat([data.materia_clave || "", data.asignatura || data.materia || "", data.especialidad || ""]));
   }
 
   return { exito: true };
