@@ -15,6 +15,22 @@ function parseSafeJSON(value) {
   }
 }
 
+function toBooleanGas(value) {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function normalizarEscalaMateriaGas(valor) {
+  return (valor === '0-5' || valor === 5 || valor === '5') ? '0-5' : '0-10';
+}
+
+function safeJSONStringifyGas(value, fallback) {
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    return JSON.stringify(fallback || []);
+  }
+}
+
 function normalizarTexto(valor) {
   return (valor || "")
     .toString()
@@ -76,6 +92,35 @@ function invalidarCacheAlumnos() {
   try { CacheService.getScriptCache().remove('alumnos_data'); } catch(e) {}
 }
 
+function getEspecialidadesPredeterminadasGas() {
+  return [
+    "1° Adm. Contable",
+    "1° S. Eléctricos",
+    "2° Adm. Contable",
+    "2° Sist. Eléctricos",
+    "3° Adm. Contable",
+    "3° Sist. Eléctricos"
+  ];
+}
+
+function getCatalogoPredeterminadoGas() {
+  var especialidades = getEspecialidadesPredeterminadasGas();
+  return [
+    { nombre: "Lenguaje y Literatura", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Matemática", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Estudios Sociales y Cívica", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Ciencia, Salud y Medio Ambiente", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Inglés", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Informática", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Educación Física", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Moral, Urbanidad y Cívica", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Seminario", categoria: "basica", escala: "0-10", requiere_especialidad: false, especialidades: [] },
+    { nombre: "Módulo 1", categoria: "modulo", escala: "0-5", requiere_especialidad: true, especialidades: especialidades },
+    { nombre: "Módulo 2", categoria: "modulo", escala: "0-5", requiere_especialidad: true, especialidades: especialidades },
+    { nombre: "Módulo 3", categoria: "modulo", escala: "0-5", requiere_especialidad: true, especialidades: especialidades }
+  ];
+}
+
 function asegurarHojaDocentes(ss) {
   var sheet = ss.getSheetByName("docentes");
   if (!sheet) {
@@ -99,6 +144,237 @@ function asegurarHojaDocentes(ss) {
     sheet.getRange(1, 1, 1, 6).setValues([["Nombre", "Grado", "Seccion", "Materia", "Escala", "Admin"]]);
   }
   return sheet;
+}
+
+function asegurarHojaAsignacionesDocente(ss) {
+  var sheet = ss.getSheetByName("docente_materias");
+  var headers = ["Docente", "Grado", "Seccion", "TipoMateria", "Materia", "Escala", "Especialidad", "EsOrientado", "Activo"];
+  if (!sheet) {
+    sheet = ss.insertSheet("docente_materias");
+    sheet.appendRow(headers);
+    return sheet;
+  }
+  if (sheet.getLastColumn() < headers.length) {
+    sheet.insertColumnsAfter(sheet.getLastColumn(), headers.length - sheet.getLastColumn());
+  }
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  return sheet;
+}
+
+function asegurarHojaCatalogoMaterias(ss) {
+  var sheet = ss.getSheetByName("catalogo_materias");
+  var headers = ["Nombre", "Categoria", "Escala", "RequiereEspecialidad", "EspecialidadesJSON", "Activo"];
+  if (!sheet) {
+    sheet = ss.insertSheet("catalogo_materias");
+    sheet.appendRow(headers);
+  } else {
+    if (sheet.getLastColumn() < headers.length) {
+      sheet.insertColumnsAfter(sheet.getLastColumn(), headers.length - sheet.getLastColumn());
+    }
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  if (sheet.getLastRow() < 2) {
+    var filasBase = getCatalogoPredeterminadoGas().map(function(item) {
+      return [
+        item.nombre,
+        item.categoria,
+        normalizarEscalaMateriaGas(item.escala),
+        item.requiere_especialidad ? "true" : "false",
+        safeJSONStringifyGas(item.especialidades || [], []),
+        "true"
+      ];
+    });
+    if (filasBase.length) {
+      sheet.getRange(2, 1, filasBase.length, headers.length).setValues(filasBase);
+    }
+  }
+  return sheet;
+}
+
+function getCatalogoMateriasGas(ss) {
+  var sheet = asegurarHojaCatalogoMaterias(ss);
+  var rows = sheet.getDataRange().getValues();
+  var data = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (!rows[i][0] || (rows[i][5] !== '' && !toBooleanGas(rows[i][5]))) continue;
+    data.push({
+      nombre: rows[i][0] || '',
+      categoria: rows[i][1] || 'basica',
+      escala: normalizarEscalaMateriaGas(rows[i][2]),
+      requiere_especialidad: toBooleanGas(rows[i][3]),
+      especialidades: parseSafeJSON(rows[i][4]).filter(function(v) { return v !== null && v !== ''; })
+    });
+  }
+  return data;
+}
+
+function normalizarAsignacionDocenteGas(item, docente, fallbackGrado, fallbackSeccion) {
+  if (!item) item = {};
+  var escala = normalizarEscalaMateriaGas(item.escala || item.tipo_materia || item.escala_notas);
+  var tipo = item.tipo_materia || item.categoria || (escala === '0-5' ? 'modulo' : 'basica');
+  return {
+    docente: docente || item.docente || '',
+    grado: item.grado || fallbackGrado || '',
+    seccion: item.seccion || fallbackSeccion || '',
+    tipo_materia: tipo === 'modulo' ? 'modulo' : 'basica',
+    materia: item.materia || item.nombre || '',
+    escala: escala,
+    especialidad: item.especialidad || '',
+    es_orientado: toBooleanGas(item.es_orientado || item.orientado || item.esOrientado)
+  };
+}
+
+function getMapaAsignacionesDocenteGas(ss) {
+  var map = {};
+  var asignSheet = asegurarHojaAsignacionesDocente(ss);
+  var asignRows = asignSheet.getDataRange().getValues();
+
+  for (var i = 1; i < asignRows.length; i++) {
+    if (!asignRows[i][0]) continue;
+    if (asignRows[i][8] !== '' && !toBooleanGas(asignRows[i][8])) continue;
+    var docente = asignRows[i][0];
+    if (!map[docente]) map[docente] = [];
+    map[docente].push({
+      docente: docente,
+      grado: asignRows[i][1] || '',
+      seccion: asignRows[i][2] || '',
+      tipo_materia: asignRows[i][3] || (normalizarEscalaMateriaGas(asignRows[i][5]) === '0-5' ? 'modulo' : 'basica'),
+      materia: asignRows[i][4] || '',
+      escala: normalizarEscalaMateriaGas(asignRows[i][5]),
+      especialidad: asignRows[i][6] || '',
+      es_orientado: toBooleanGas(asignRows[i][7])
+    });
+  }
+
+  var docentesSheet = asegurarHojaDocentes(ss);
+  var docentesRows = docentesSheet.getDataRange().getValues();
+  for (var j = 1; j < docentesRows.length; j++) {
+    var nombre = docentesRows[j][0];
+    if (!nombre || (map[nombre] && map[nombre].length > 0)) continue;
+    if (!docentesRows[j][3]) continue;
+    map[nombre] = [normalizarAsignacionDocenteGas({
+      materia: docentesRows[j][3] || '',
+      escala: docentesRows[j][4] || '0-10',
+      es_orientado: true
+    }, nombre, docentesRows[j][1] || '', docentesRows[j][2] || '')];
+  }
+
+  Object.keys(map).forEach(function(nombreDocente) {
+    map[nombreDocente].sort(function(a, b) {
+      return (b.es_orientado ? 1 : 0) - (a.es_orientado ? 1 : 0);
+    });
+  });
+
+  return map;
+}
+
+function reemplazarAsignacionesDocenteGas(ss, docente, asignaciones) {
+  var sheet = asegurarHojaAsignacionesDocente(ss);
+  var rows = sheet.getDataRange().getValues();
+  var nuevasFilas = [rows[0]];
+  for (var i = 1; i < rows.length; i++) {
+    if ((rows[i][0] || '') !== docente) nuevasFilas.push(rows[i]);
+  }
+
+  (asignaciones || []).forEach(function(item, idx) {
+    var normalizado = normalizarAsignacionDocenteGas(item, docente);
+    if (!normalizado.materia) return;
+    nuevasFilas.push([
+      docente,
+      normalizado.grado,
+      normalizado.seccion,
+      normalizado.tipo_materia,
+      normalizado.materia,
+      normalizado.escala,
+      normalizado.especialidad || '',
+      (idx === 0 ? true : normalizado.es_orientado) ? "true" : "false",
+      "true"
+    ]);
+  });
+
+  sheet.clearContents();
+  sheet.getRange(1, 1, nuevasFilas.length, nuevasFilas[0].length).setValues(nuevasFilas);
+}
+
+function upsertDocenteBaseGas(ss, docenteData) {
+  var sheet = asegurarHojaDocentes(ss);
+  var rows = sheet.getDataRange().getValues();
+  var nombre = docenteData.nombre || '';
+  var admin = toBooleanGas(docenteData.admin);
+  var asignaciones = docenteData.materias_asignadas || [];
+  var principal = null;
+  for (var i = 0; i < asignaciones.length; i++) {
+    if (toBooleanGas(asignaciones[i].es_orientado)) {
+      principal = asignaciones[i];
+      break;
+    }
+  }
+  if (!principal && asignaciones.length) principal = asignaciones[0];
+
+  var fila = [
+    nombre,
+    docenteData.grado_orientado || docenteData.grado || (principal ? principal.grado : '') || '',
+    docenteData.seccion_orientada || docenteData.seccion || (principal ? principal.seccion : '') || '',
+    principal ? (principal.materia || '') : (docenteData.materia || ''),
+    principal ? normalizarEscalaMateriaGas(principal.escala) : normalizarEscalaMateriaGas(docenteData.tipo_materia || docenteData.escala || '0-10'),
+    admin ? "true" : "false"
+  ];
+
+  var filaEncontrada = -1;
+  for (var r = 1; r < rows.length; r++) {
+    if ((rows[r][0] || '') === nombre) {
+      filaEncontrada = r + 1;
+      break;
+    }
+  }
+
+  if (filaEncontrada > 0) {
+    sheet.getRange(filaEncontrada, 1, 1, fila.length).setValues([fila]);
+  } else {
+    sheet.appendRow(fila);
+  }
+}
+
+function getDocentesConAsignacionesGas(ss) {
+  var sheet = asegurarHojaDocentes(ss);
+  var rows = sheet.getDataRange().getValues();
+  var mapaAsignaciones = getMapaAsignacionesDocenteGas(ss);
+  var data = [];
+
+  for (var i = 1; i < rows.length; i++) {
+    if (!rows[i][0]) continue;
+    var nombre = rows[i][0];
+    var asignaciones = (mapaAsignaciones[nombre] || []).slice();
+    var orientada = null;
+    for (var j = 0; j < asignaciones.length; j++) {
+      if (toBooleanGas(asignaciones[j].es_orientado)) {
+        orientada = asignaciones[j];
+        break;
+      }
+    }
+    if (!orientada && asignaciones.length) orientada = asignaciones[0];
+    var principal = orientada || {
+      materia: rows[i][3] || '',
+      escala: rows[i][4] || '0-10',
+      tipo_materia: normalizarEscalaMateriaGas(rows[i][4]) === '0-5' ? 'modulo' : 'basica'
+    };
+
+    data.push({
+      nombre: nombre,
+      grado: rows[i][1] || '',
+      seccion: rows[i][2] || '',
+      grado_orientado: rows[i][1] || '',
+      seccion_orientada: rows[i][2] || '',
+      materia: principal.materia || '',
+      tipo_materia: principal.escala || "0-10",
+      escala: principal.escala || "0-10",
+      admin: toBooleanGas(rows[i][5]),
+      materias_asignadas: asignaciones
+    });
+  }
+
+  return data;
 }
 
 function obtenerHojaDiRefuerzo(ss) {
@@ -183,22 +459,10 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 
   } else if (tipo === "lista_docentes" || tipo === "docentes") {
-    var sheet = asegurarHojaDocentes(ss);
-    var rows = sheet.getDataRange().getValues();
-    var data = [];
-    for (var i = 1; i < rows.length; i++) {
-      if (rows[i][0]) {
-        var adminValue = rows[i][5];
-        data.push({
-          nombre: rows[i][0], grado: rows[i][1] || "", seccion: rows[i][2] || "",
-          materia: rows[i][3] || "",
-          tipo_materia: rows[i][4] || "0-10",
-          escala: rows[i][4] || "0-10",
-          admin: adminValue === true || adminValue === 'true'
-        });
-      }
-    }
-    return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify(getDocentesConAsignacionesGas(ss))).setMimeType(ContentService.MimeType.JSON);
+
+  } else if (tipo === "catalogo_materias") {
+    return ContentService.createTextOutput(JSON.stringify(getCatalogoMateriasGas(ss))).setMimeType(ContentService.MimeType.JSON);
 
   } else if (tipo === "alumnos") {
     var gradoParam = normalizarTexto(e.parameter && e.parameter.grado ? e.parameter.grado : '');
@@ -343,9 +607,11 @@ function doGet(e) {
 
   } else if (tipo === "notas") {
     var gradoParam = (e && e.parameter && e.parameter.grado) ? e.parameter.grado : '';
+    var seccionParam = (e && e.parameter && e.parameter.seccion) ? e.parameter.seccion : '';
     var escalaParam = (e && e.parameter && e.parameter.escala) ? e.parameter.escala : '0-10';
-    return ContentService.createTextOutput(JSON.stringify(obtenerNotasPorGrado(gradoParam, escalaParam)))
-      .setMimeType(ContentService.MimeType.JSON);
+    var materiaClaveParam = (e && e.parameter && e.parameter.materia_clave) ? e.parameter.materia_clave : '';
+    // Usar jsonResp para soportar JSONP cuando se llame con ?callback= (evita bloqueo CORS)
+    return jsonResp(obtenerNotasPorGrado(gradoParam, escalaParam, materiaClaveParam, seccionParam));
 
   } else if (tipo === "historial_informes") {
     return ContentService.createTextOutput(JSON.stringify(obtenerHistorialInformes()))
@@ -450,7 +716,14 @@ function doPost(e) {
   var props = PropertiesService.getScriptProperties();
   var payload = (e && e.postData && e.postData.contents) ? e.postData.contents : '';
   var data = {};
-  try { data = JSON.parse(payload); } catch (err) { data = {}; }
+  try {
+    data = JSON.parse(payload);
+  } catch (err) {
+    data = {};
+  }
+  if ((!data || !data.tipo_post) && e && e.parameter) {
+    data = Object.assign({}, data, e.parameter);
+  }
 
   if (data.tipo_post === "toggle_mantenimiento") {
     if (data.password === "747-8") {
@@ -600,16 +873,59 @@ function doPost(e) {
     return ContentService.createTextOutput(JSON.stringify({ success: eliminado })).setMimeType(ContentService.MimeType.JSON);
 
   } else if (data.tipo_post === "nuevo_docente") {
-    var sheet = asegurarHojaDocentes(ss);
-    sheet.appendRow([
-      data.nombre || '',
-      data.grado || '',
-      data.seccion || '',
-      data.materia || '',
-      data.tipo_materia || data.escala || '0-10',
-      data.admin ? "true" : "false"
-    ]);
+    var asignacionesNuevoDocente = Array.isArray(data.materias_asignadas) ? data.materias_asignadas : [];
+    if (!asignacionesNuevoDocente.length && data.materia) {
+      asignacionesNuevoDocente = [normalizarAsignacionDocenteGas({
+        grado: data.grado_orientado || data.grado || '',
+        seccion: data.seccion_orientada || data.seccion || '',
+        tipo_materia: data.categoria || data.tipo_materia || '',
+        materia: data.materia || '',
+        escala: data.tipo_materia || data.escala || '0-10',
+        especialidad: data.especialidad || '',
+        es_orientado: true
+      }, data.nombre || '')];
+    }
+    upsertDocenteBaseGas(ss, {
+      nombre: data.nombre || '',
+      grado_orientado: data.grado_orientado || data.grado || '',
+      seccion_orientada: data.seccion_orientada || data.seccion || '',
+      admin: data.admin,
+      materias_asignadas: asignacionesNuevoDocente
+    });
+    reemplazarAsignacionesDocenteGas(ss, data.nombre || '', asignacionesNuevoDocente);
     return ContentService.createTextOutput("Exito").setMimeType(ContentService.MimeType.TEXT);
+
+  } else if (data.tipo_post === "guardar_asignaciones_docente") {
+    var asignacionesDocente = Array.isArray(data.materias_asignadas) ? data.materias_asignadas : [];
+    upsertDocenteBaseGas(ss, {
+      nombre: data.nombre || '',
+      grado_orientado: data.grado_orientado || data.grado || '',
+      seccion_orientada: data.seccion_orientada || data.seccion || '',
+      admin: data.admin,
+      materias_asignadas: asignacionesDocente
+    });
+    reemplazarAsignacionesDocenteGas(ss, data.nombre || '', asignacionesDocente);
+    return ContentService.createTextOutput(JSON.stringify({ exito: true })).setMimeType(ContentService.MimeType.JSON);
+
+  } else if (data.tipo_post === "guardar_catalogo_materias") {
+    var catalogo = Array.isArray(data.catalogo) ? data.catalogo : [];
+    var catalogoSheet = asegurarHojaCatalogoMaterias(ss);
+    var filasCatalogo = [["Nombre", "Categoria", "Escala", "RequiereEspecialidad", "EspecialidadesJSON", "Activo"]];
+    for (var c = 0; c < catalogo.length; c++) {
+      var itemCat = catalogo[c] || {};
+      if (!itemCat.nombre) continue;
+      filasCatalogo.push([
+        itemCat.nombre || '',
+        itemCat.categoria === 'modulo' ? 'modulo' : 'basica',
+        normalizarEscalaMateriaGas(itemCat.escala),
+        toBooleanGas(itemCat.requiere_especialidad) ? "true" : "false",
+        safeJSONStringifyGas(itemCat.especialidades || [], []),
+        "true"
+      ]);
+    }
+    catalogoSheet.clearContents();
+    catalogoSheet.getRange(1, 1, filasCatalogo.length, filasCatalogo[0].length).setValues(filasCatalogo);
+    return ContentService.createTextOutput(JSON.stringify({ exito: true })).setMimeType(ContentService.MimeType.JSON);
 
   } else if (data.tipo_post === "agregar_observacion") {
     var sheet = ss.getSheetByName("observaciones");
@@ -801,25 +1117,43 @@ function getNombreHojaNotas(escala) {
   return getEscalaNotasGas(escala) === 5 ? 'nota-tecnicos' : 'notas';
 }
 
+function asegurarEstructuraNotasSheet(sheet) {
+  var headers = [
+    "Grado", "Seccion", "Nombre", "NIE", "Asignatura", "Especialidad", "ClaveMateria",
+    "P1_Cuaderno", "P1_Integradora", "P1_Examen",
+    "P2_Cuaderno", "P2_Integradora", "P2_Examen",
+    "P3_Cuaderno", "P3_Integradora", "P3_Examen",
+    "P4_Cuaderno", "P4_Integradora", "P4_Examen"
+  ];
+  if (sheet.getLastColumn() < headers.length) {
+    sheet.insertColumnsAfter(4, headers.length - sheet.getLastColumn());
+  }
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+}
+
 function getOrCreateNotasSheet(ss, escala) {
   var sheet = ss.getSheetByName(getNombreHojaNotas(escala));
   if (!sheet) {
     sheet = ss.insertSheet(getNombreHojaNotas(escala));
     sheet.appendRow([
-      "Grado", "Seccion", "Nombre", "NIE",
+      "Grado", "Seccion", "Nombre", "NIE", "Asignatura", "Especialidad", "ClaveMateria",
       "P1_Cuaderno", "P1_Integradora", "P1_Examen",
       "P2_Cuaderno", "P2_Integradora", "P2_Examen",
       "P3_Cuaderno", "P3_Integradora", "P3_Examen",
       "P4_Cuaderno", "P4_Integradora", "P4_Examen"
     ]);
+  } else {
+    asegurarEstructuraNotasSheet(sheet);
   }
   return sheet;
 }
 
-function obtenerNotasPorGrado(grado, escala) {
+function obtenerNotasPorGrado(grado, escala, materiaClave, seccion) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var gradoNorm = normalizarTexto(grado);
+  var seccionNorm = normalizarTexto(seccion || '');
   var escalaMax = getEscalaNotasGas(escala);
+  var materiaClaveNorm = normalizarTexto(materiaClave || '');
 
   var sheet = getOrCreateNotasSheet(ss, escalaMax);
 
@@ -830,24 +1164,29 @@ function obtenerNotasPorGrado(grado, escala) {
     var fila = rows[i];
     if (!fila[2] && !fila[3]) continue;
     if (gradoNorm && normalizarTexto(fila[0]) !== gradoNorm) continue;
+    if (seccionNorm && normalizarTexto(fila[1]) !== seccionNorm) continue;
+    if (materiaClaveNorm && normalizarTexto(fila[6] || fila[4] || '') !== materiaClaveNorm) continue;
 
     var est = {
       grado:          fila[0]  || '',
       seccion:        fila[1]  || '',
       nombre:         fila[2]  || '',
       nie:            fila[3]  || '',
-      p1_cuaderno:    parseNotaSegura(fila[4]),
-      p1_integradora: parseNotaSegura(fila[5]),
-      p1_examen:      parseNotaSegura(fila[6]),
-      p2_cuaderno:    parseNotaSegura(fila[7]),
-      p2_integradora: parseNotaSegura(fila[8]),
-      p2_examen:      parseNotaSegura(fila[9]),
-      p3_cuaderno:    parseNotaSegura(fila[10]),
-      p3_integradora: parseNotaSegura(fila[11]),
-      p3_examen:      parseNotaSegura(fila[12]),
-      p4_cuaderno:    parseNotaSegura(fila[13]),
-      p4_integradora: parseNotaSegura(fila[14]),
-      p4_examen:      parseNotaSegura(fila[15])
+      asignatura:     fila[4]  || '',
+      especialidad:   fila[5]  || '',
+      materia_clave:  fila[6]  || '',
+      p1_cuaderno:    parseNotaSegura(fila[7]),
+      p1_integradora: parseNotaSegura(fila[8]),
+      p1_examen:      parseNotaSegura(fila[9]),
+      p2_cuaderno:    parseNotaSegura(fila[10]),
+      p2_integradora: parseNotaSegura(fila[11]),
+      p2_examen:      parseNotaSegura(fila[12]),
+      p3_cuaderno:    parseNotaSegura(fila[13]),
+      p3_integradora: parseNotaSegura(fila[14]),
+      p3_examen:      parseNotaSegura(fila[15]),
+      p4_cuaderno:    parseNotaSegura(fila[16]),
+      p4_integradora: parseNotaSegura(fila[17]),
+      p4_examen:      parseNotaSegura(fila[18])
     };
     est.periodo1  = calcularNotaPeriodoGas(est.p1_cuaderno, est.p1_integradora, est.p1_examen, escalaMax);
     est.periodo2  = calcularNotaPeriodoGas(est.p2_cuaderno, est.p2_integradora, est.p2_examen, escalaMax);
@@ -868,8 +1207,11 @@ function guardarNotaAlumno(data) {
 
   var rows = sheet.getDataRange().getValues();
   var gradoNorm  = normalizarTexto(data.grado  || '');
+  var seccionNorm = normalizarTexto(data.seccion || '');
   var nombreNorm = normalizarTexto(data.nombre || '');
-  var nieStr     = (data.nie || '').toString().trim();
+  var nieStr     = normalizarTexto(data.nie || '');
+  var materiaClave = (data.materia_clave || data.asignatura || data.materia || '').toString().trim();
+  var materiaClaveNorm = normalizarTexto(materiaClave);
 
   var notasValores = [
     toNum(data.p1_cuaderno, escalaMax),    toNum(data.p1_integradora, escalaMax), toNum(data.p1_examen, escalaMax),
@@ -881,21 +1223,33 @@ function guardarNotaAlumno(data) {
   var filaEncontrada = -1;
   for (var i = 1; i < rows.length; i++) {
     var filaGrado  = normalizarTexto(rows[i][0]);
+    var filaSeccion = normalizarTexto(rows[i][1]);
     var filaFila   = normalizarTexto(rows[i][2]);
-    var filaNie    = (rows[i][3] || '').toString().trim();
+    var filaNie    = normalizarTexto(rows[i][3] || '');
+    var filaMateria = normalizarTexto(rows[i][6] || rows[i][4] || '');
     var coincide = filaGrado === gradoNorm &&
+      filaSeccion === seccionNorm &&
+      filaMateria === materiaClaveNorm &&
       (filaNie !== '' && filaNie === nieStr || filaFila === nombreNorm);
     if (coincide) { filaEncontrada = i + 1; break; }
   }
 
   if (filaEncontrada > 0) {
-    sheet.getRange(filaEncontrada, 5, 1, 12).setValues([notasValores]);
+    sheet.getRange(filaEncontrada, 5, 1, 3).setValues([[
+      data.asignatura || data.materia || '',
+      data.especialidad || '',
+      materiaClave
+    ]]);
+    sheet.getRange(filaEncontrada, 8, 1, 12).setValues([notasValores]);
   } else {
     sheet.appendRow([
       data.grado   || '',
       data.seccion || '',
       data.nombre  || '',
-      data.nie     || ''
+      data.nie     || '',
+      data.asignatura || data.materia || '',
+      data.especialidad || '',
+      materiaClave
     ].concat(notasValores));
   }
 
@@ -906,20 +1260,71 @@ function guardarNotasGrupo(data) {
   var notas = data.notas || [];
   if (!Array.isArray(notas)) return { exito: false, error: 'Notas inválidas' };
 
+  // Optimización: una sola lectura de hoja y búsqueda por índice (evita O(n*m))
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var escalaMax = getEscalaNotasGas(data.escala || data.escala_notas || data.tipo_materia || '0-10');
+  var sheet = getOrCreateNotasSheet(ss, escalaMax);
+  asegurarEstructuraNotasSheet(sheet);
+
+  var rows = sheet.getDataRange().getValues();
+  var idx = {};
+
+  // Índice por (grado|seccion|materia|nie)
+  for (var r = 1; r < rows.length; r++) {
+    var fila = rows[r];
+    var g = normalizarTexto(fila[0]);
+    var s = normalizarTexto(fila[1]);
+    var m = normalizarTexto(fila[6] || fila[4] || '');
+    var nie = normalizarTexto(fila[3] || '');
+    if (!g || !s || !m || !nie) continue;
+    idx[g + '|' + s + '|' + m + '|' + nie] = r + 1; // 1-based
+  }
+
+  function norm(v) { return normalizarTexto((v || '').toString().trim()); }
+
   var guardadas = 0;
+  var nuevos = [];
+
   for (var i = 0; i < notas.length; i++) {
     var item = notas[i] || {};
-    item.grado = item.grado || data.grado || '';
-    item.seccion = item.seccion || data.seccion || '';
-    item.escala = item.escala || data.escala || data.escala_notas || data.tipo_materia || '0-10';
-    guardarNotaAlumno(item);
+    var grado = item.grado || data.grado || '';
+    var seccion = item.seccion || data.seccion || '';
+    var asignatura = item.asignatura || data.asignatura || data.materia || '';
+    var especialidad = item.especialidad || data.especialidad || '';
+    var materiaClave = (item.materia_clave || data.materia_clave || asignatura || '').toString().trim();
+    var nieStr = normalizarTexto(item.nie || '');
+    var nombre = item.nombre || '';
+    var key = norm(grado) + '|' + norm(seccion) + '|' + norm(materiaClave) + '|' + nieStr;
+
+    var notasValores = [
+      toNum(item.p1_cuaderno, escalaMax),    toNum(item.p1_integradora, escalaMax), toNum(item.p1_examen, escalaMax),
+      toNum(item.p2_cuaderno, escalaMax),    toNum(item.p2_integradora, escalaMax), toNum(item.p2_examen, escalaMax),
+      toNum(item.p3_cuaderno, escalaMax),    toNum(item.p3_integradora, escalaMax), toNum(item.p3_examen, escalaMax),
+      toNum(item.p4_cuaderno, escalaMax),    toNum(item.p4_integradora, escalaMax), toNum(item.p4_examen, escalaMax)
+    ];
+
+    var filaEncontrada = idx[key] || -1;
+    if (filaEncontrada > 0) {
+      // Actualizar columnas Asignatura/Especialidad/ClaveMateria + notas
+      sheet.getRange(filaEncontrada, 5, 1, 3).setValues([[asignatura, especialidad, materiaClave]]);
+      sheet.getRange(filaEncontrada, 8, 1, 12).setValues([notasValores]);
+    } else {
+      nuevos.push([grado, seccion, nombre, nieStr, asignatura, especialidad, materiaClave].concat(notasValores));
+      // Reservar para evitar duplicados dentro del mismo batch
+      idx[key] = rows.length + nuevos.length; // aprox (se corrige al escribir)
+    }
     guardadas++;
+  }
+
+  if (nuevos.length) {
+    var start = sheet.getLastRow() + 1;
+    sheet.getRange(start, 1, nuevos.length, nuevos[0].length).setValues(nuevos);
   }
 
   return {
     exito: true,
     guardadas: guardadas,
-    hoja: getNombreHojaNotas(data.escala || data.escala_notas || data.tipo_materia)
+    hoja: getNombreHojaNotas(escalaMax)
   };
 }
 
@@ -954,13 +1359,14 @@ function exportarExcelNotasInstitucional(params) {
   var grado    = params.grado    || '';
   var seccion  = params.seccion  || '';
   var asignatura = params.asignatura || '';
+  var materia_clave = params.materia_clave || params.clave || '';
   var docente  = params.docente  || '';
   var anio     = params.anio     || new Date().getFullYear();
   var escalaMax = getEscalaNotasGas(params.escala || params.escala_notas || params.tipo_materia);
   var notaAprobado = escalaMax === 5 ? 3 : 6;
   var notaRiesgo = escalaMax === 5 ? 2.5 : 5;
 
-  var notasData = obtenerNotasPorGrado(grado, escalaMax);
+  var notasData = obtenerNotasPorGrado(grado, escalaMax, materia_clave, seccion);
   if (seccion) {
     var secNorm = normalizarTexto(seccion);
     notasData = notasData.filter(function(n){ return normalizarTexto(n.seccion) === secNorm; });
@@ -1377,17 +1783,19 @@ function obtenerExpedienteAlumno(nie) {
   for (var hn = 0; hn < hojasNotas.length && !notas; hn++) {
     var notasSheet = hojasNotas[hn].sheet;
     if (!notasSheet) continue;
+    asegurarEstructuraNotasSheet(notasSheet);
     var escalaNotasAlumno = hojasNotas[hn].escala;
     var notasRows = notasSheet.getDataRange().getValues();
     for (var n = 1; n < notasRows.length; n++) {
       if ((notasRows[n][3]||'').toString().trim() === nieStr ||
           normalizarTexto(notasRows[n][2]) === normalizarTexto(alumno.nombre)) {
+        var baseNota = 7;
         notas = {
           escala: escalaNotasAlumno,
-          p1: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][4]), parseNotaSegura(notasRows[n][5]), parseNotaSegura(notasRows[n][6]), escalaNotasAlumno),
-          p2: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][7]), parseNotaSegura(notasRows[n][8]), parseNotaSegura(notasRows[n][9]), escalaNotasAlumno),
-          p3: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][10]), parseNotaSegura(notasRows[n][11]), parseNotaSegura(notasRows[n][12]), escalaNotasAlumno),
-          p4: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][13]), parseNotaSegura(notasRows[n][14]), parseNotaSegura(notasRows[n][15]), escalaNotasAlumno)
+          p1: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][baseNota]), parseNotaSegura(notasRows[n][baseNota + 1]), parseNotaSegura(notasRows[n][baseNota + 2]), escalaNotasAlumno),
+          p2: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][baseNota + 3]), parseNotaSegura(notasRows[n][baseNota + 4]), parseNotaSegura(notasRows[n][baseNota + 5]), escalaNotasAlumno),
+          p3: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][baseNota + 6]), parseNotaSegura(notasRows[n][baseNota + 7]), parseNotaSegura(notasRows[n][baseNota + 8]), escalaNotasAlumno),
+          p4: calcularNotaPeriodoGas(parseNotaSegura(notasRows[n][baseNota + 9]), parseNotaSegura(notasRows[n][baseNota + 10]), parseNotaSegura(notasRows[n][baseNota + 11]), escalaNotasAlumno)
         };
         notas.final = Math.min(escalaNotasAlumno, (notas.p1 + notas.p2 + notas.p3 + notas.p4) / 4);
         break;
